@@ -478,7 +478,22 @@ def generate_html_dashboard(report: dict, suggestions: str, is_synthetic: bool =
     industry_status = steps.get("step_10_best_practices", {}).get("status", "N/A")
 
     blockers = steps.get("step_7_readiness", {}).get("details", {}).get("blockers", [])
+
+    # Try kpi_identity first, then fall back to parsed_kpi.json
     historical = identity.get("historical_aggregates", [])
+    if not historical:
+        import pathlib
+        parsed_path = pathlib.Path("parsed_kpi.json")
+        if parsed_path.exists():
+            try:
+                with open(parsed_path, "r", encoding="utf-8") as _f:
+                    _parsed = json.load(_f)
+                historical = _parsed.get("historical_aggregates", [])
+                if historical:
+                    print(f"  Chart: loaded {len(historical)} data points from parsed_kpi.json")
+            except Exception:
+                pass
+
     has_chart = len(historical) >= 2
 
     chart_labels = json.dumps([h["period"] for h in historical]) if has_chart else "[]"
@@ -524,6 +539,46 @@ def generate_html_dashboard(report: dict, suggestions: str, is_synthetic: bool =
     </div>"""
 
     blockers_html = "".join([f'<div class="blocker-item">{b}</div>' for b in blockers]) if blockers else '<div class="no-blocker">None — proceed to dashboard with documented caveats.</div>'
+
+    # Build Chart.js script with dynamic y-axis scale
+    if has_chart:
+        vals = [h["value"] for h in historical]
+        y_min = max(0, int(min(vals)) - 5)
+        y_max = int(max(vals)) + 5
+        chart_js = f"""<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+window.addEventListener('load', function() {{
+  var ctx = document.getElementById('trendChart');
+  if (!ctx) return;
+  new Chart(ctx, {{
+    type: 'line',
+    data: {{
+      labels: {chart_labels},
+      datasets: [{{
+        label: '{kpi_name}',
+        data: {chart_values},
+        borderColor: '#1a7a9e',
+        backgroundColor: 'rgba(26,122,158,0.08)',
+        borderWidth: 2.5,
+        pointRadius: 5,
+        pointBackgroundColor: '#1a7a9e',
+        tension: 0.3
+      }}]
+    }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {{ legend: {{ position: 'bottom', labels: {{ font: {{ size: 11 }} }} }} }},
+      scales: {{
+        y: {{ min: {y_min}, max: {y_max}, ticks: {{ font: {{ size: 11 }} }} }},
+        x: {{ ticks: {{ font: {{ size: 11 }} }} }}
+      }}
+    }}
+  }});
+}});
+</script>"""
+    else:
+        chart_js = ""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -627,8 +682,7 @@ def generate_html_dashboard(report: dict, suggestions: str, is_synthetic: bool =
     MIT License &nbsp;·&nbsp; github.com/ElmYgl/kpi_readiness_10step &nbsp;·&nbsp; AIR Forum 2026
   </div>
 </div>
-{'<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>' if has_chart else ''}
-{'<script>new Chart(document.getElementById("trendChart"),{type:"line",data:{labels:' + chart_labels + ',datasets:[{label:"Retention Rate (%)",data:' + chart_values + ',borderColor:"#1a7a9e",backgroundColor:"rgba(26,122,158,0.08)",borderWidth:2.5,pointRadius:5,pointBackgroundColor:"#1a7a9e",tension:0.3},{label:"Target (88%)",data:' + json.dumps([88]*len(historical)) + ',borderColor:"#c9793a",borderDash:[6,4],borderWidth:1.5,pointRadius:0,tension:0}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{font:{size:11}}}},scales:{y:{min:85,max:93,ticks:{font:{size:11}}},x:{ticks:{font:{size:11}}}}}});</script>' if has_chart else ''}
+{chart_js}
 </body>
 </html>"""
     return html
@@ -685,6 +739,22 @@ def main() -> None:
 
     identity = report.get("kpi_identity", {})
     historical = identity.get("historical_aggregates", [])
+
+    # Fallback: check parsed_kpi.json for historical data not written to report
+    if not historical:
+        import pathlib
+        parsed_path = pathlib.Path("parsed_kpi.json")
+        if parsed_path.exists():
+            try:
+                with open(parsed_path, "r", encoding="utf-8") as _f:
+                    _parsed = json.load(_f)
+                historical = _parsed.get("historical_aggregates", [])
+                if historical:
+                    report["kpi_identity"]["historical_aggregates"] = historical
+                    print(f"  Loaded {len(historical)} historical data points from parsed_kpi.json")
+            except Exception:
+                pass
+
     is_synthetic = False
 
     if len(historical) < 2:
