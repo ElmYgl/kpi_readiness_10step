@@ -22,16 +22,19 @@ Usage:
 
 Requirements:
     pip install anthropic
+    pip install openpyxl  (optional, for Excel file upload)
     Environment variable ANTHROPIC_API_KEY must be set.
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import List, Dict, Any
 
 
 # ============================================================================
@@ -219,6 +222,185 @@ def save_parsed_kpi(parsed: dict, filepath: str) -> None:
 
 
 # ============================================================================
+# Historical Data Intake — Three Options
+# ============================================================================
+
+def ask_data_option() -> str:
+    """
+    Ask user how they want to provide historical data.
+    Returns '1', '2', or '3'.
+    """
+    print()
+    print("=" * 70)
+    print("HISTORICAL DATA")
+    print("=" * 70)
+    print()
+    print("How would you like to provide historical data?")
+    print()
+    print("  [1] Include it in your KPI description (any format)")
+    print("      e.g. Fall 2020: 88.5, Fall 2021: 89.0 ...")
+    print("      or a table, narrative, or copy-paste from notes")
+    print()
+    print("  [2] Upload an Excel or CSV file")
+    print("      Two columns expected: period and value")
+    print("      e.g. retention_data.xlsx or historical.csv")
+    print()
+    print("  [3] No historical data available yet")
+    print("      kpi_improver.py will generate synthetic placeholder data")
+    print()
+
+    while True:
+        response = input("  Your choice (1/2/3): ").strip()
+        if response in {"1", "2", "3"}:
+            return response
+        print("  Please enter 1, 2, or 3.")
+
+
+def load_historical_from_excel(filepath: str) -> List[Dict[str, Any]]:
+    """
+    Load historical data from Excel file (.xlsx).
+    Expects two columns: period (e.g. Fall 2020) and value (numeric).
+    Column headers are flexible — fuzzy matching used.
+    Requires: pip install openpyxl
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        print()
+        print("  openpyxl not installed.")
+        print("  Install with: pip install openpyxl")
+        print("  Falling back to no historical data.")
+        return []
+
+    try:
+        wb = openpyxl.load_workbook(filepath, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+
+        if not rows:
+            print("  Excel file appears empty.")
+            return []
+
+        # Find period and value columns — flexible header matching
+        headers = [str(h).lower().strip() if h else "" for h in rows[0]]
+        period_col = None
+        value_col = None
+
+        for i, h in enumerate(headers):
+            if any(term in h for term in ["period", "year", "term", "date", "fall", "spring"]):
+                period_col = i
+            if any(term in h for term in ["value", "rate", "pct", "percent", "%", "count", "n"]):
+                value_col = i
+
+        # Fallback: assume first col = period, second = value
+        if period_col is None:
+            period_col = 0
+        if value_col is None:
+            value_col = 1
+
+        results = []
+        for row in rows[1:]:  # Skip header
+            try:
+                period = str(row[period_col]).strip()
+                value = float(row[value_col])
+                if period and period.lower() != "none":
+                    results.append({"period": period, "value": value})
+            except (TypeError, ValueError, IndexError):
+                continue
+
+        return results
+
+    except Exception as e:
+        print(f"  Could not read Excel file: {e}")
+        return []
+
+
+def load_historical_from_csv_file(filepath: str) -> List[Dict[str, Any]]:
+    """
+    Load historical data from CSV file.
+    Expects two columns: period and value.
+    Header row optional — auto-detected.
+    """
+    results = []
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            rows = list(reader)
+
+        if not rows:
+            print("  CSV file appears empty.")
+            return []
+
+        # Detect if first row is a header
+        start = 0
+        try:
+            float(rows[0][1])
+        except (ValueError, IndexError):
+            start = 1  # First row is a header
+
+        for row in rows[start:]:
+            try:
+                period = str(row[0]).strip()
+                value = float(row[1])
+                if period:
+                    results.append({"period": period, "value": value})
+            except (ValueError, IndexError):
+                continue
+
+        return results
+
+    except Exception as e:
+        print(f"  Could not read CSV file: {e}")
+        return []
+
+
+def get_historical_data_from_file() -> List[Dict[str, Any]]:
+    """
+    Prompt user for file path and load historical data.
+    Supports .xlsx and .csv files.
+    """
+    print()
+    print("  Enter the full path to your Excel or CSV file.")
+    print("  Example: C:\\Users\\eyglesias\\retention_data.xlsx")
+    print("  Example: historical_rates.csv")
+    print()
+
+    filepath = input("  File path: ").strip().strip('"').strip("'")
+
+    if not filepath:
+        print("  No file path entered. Proceeding without historical data.")
+        return []
+
+    path = Path(filepath)
+
+    if not path.exists():
+        print(f"  File not found: {filepath}")
+        print("  Proceeding without historical data.")
+        return []
+
+    suffix = path.suffix.lower()
+
+    if suffix in {".xlsx", ".xls"}:
+        data = load_historical_from_excel(filepath)
+    elif suffix == ".csv":
+        data = load_historical_from_csv_file(filepath)
+    else:
+        print(f"  Unsupported file type: {suffix}")
+        print("  Supported types: .xlsx, .xls, .csv")
+        print("  Proceeding without historical data.")
+        return []
+
+    if data:
+        print(f"  Loaded {len(data)} data points from {path.name}:")
+        for d in data:
+            print(f"    {d['period']}: {d['value']}")
+    else:
+        print("  No valid data found in file.")
+
+    return data
+
+
+# ============================================================================
 # Run kpi_readiness_10step.py
 # ============================================================================
 
@@ -300,14 +482,14 @@ def main() -> None:
     print("AIR Forum 2026")
     print("=" * 70)
 
+    # ── Step 1: Get KPI description ───────────────────────────────────────────
     print("""
 Paste or type your KPI description below.
 Include as much detail as you have:
   - What is being measured
-  - How it is calculated
-  - Where the data comes from
-  - Who owns/uses it
-  - Any historical values (optional)
+  - How it is calculated (formula)
+  - Where the data comes from (source system)
+  - Who owns and uses it (data owner, audience)
   - Any known limitations or equity considerations
 
 When done, type END on a new line and press Enter.
@@ -329,10 +511,38 @@ When done, type END on a new line and press Enter.
         print("\n✗ No description entered. Exiting.")
         sys.exit(1)
 
-    # Step 1: Parse with Claude
+    # ── Step 2: Ask how historical data will be provided ─────────────────────
+    data_option = ask_data_option()
+
+    # ── Step 3: Handle data option ────────────────────────────────────────────
+    file_historical = []
+
+    if data_option == "2":
+        file_historical = get_historical_data_from_file()
+        if file_historical:
+            print(f"\n  Data loaded successfully — {len(file_historical)} points ready.")
+        else:
+            print("  No data loaded — will proceed without historical data.")
+            data_option = "3"
+
+    elif data_option == "1":
+        print("\n  Include your historical values in the description above.")
+        print("  Claude will extract them automatically during parsing.")
+
+    elif data_option == "3":
+        print("\n  No historical data — kpi_improver.py will generate synthetic placeholder.")
+
+    # ── Step 4: Parse with Claude ─────────────────────────────────────────────
     parsed = parse_kpi_with_claude(description)
 
-    # Step 2: Human review (governance guardrail)
+    # ── Step 5: Inject or clear historical data based on option ──────────────
+    if data_option == "2" and file_historical:
+        parsed["historical_aggregates"] = file_historical
+        print(f"\n  Injected {len(file_historical)} historical data points from file.")
+    elif data_option == "3":
+        parsed["historical_aggregates"] = []
+
+    # ── Step 6: Human review (governance guardrail) ───────────────────────────
     display_parsed_fields(parsed)
 
     confirmed = confirm_with_user()
@@ -342,10 +552,10 @@ When done, type END on a new line and press Enter.
         print("  Tip: Add more detail about formula, source system, or audience.")
         sys.exit(0)
 
-    # Step 3: Save parsed fields
+    # ── Step 7: Save parsed fields ────────────────────────────────────────────
     save_parsed_kpi(parsed, PARSED_OUTPUT_FILE)
 
-    # Step 4: Run 10-step validation
+    # ── Step 8: Run 10-step validation ────────────────────────────────────────
     run_readiness_check(PARSED_OUTPUT_FILE)
 
     print("\n" + "=" * 70)
