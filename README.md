@@ -45,6 +45,98 @@ no-API mode
 
 ---
 
+## Architecture
+
+The pipeline is three Python modules connected by JSON and output files.
+Module 2 is the pure-Python validation engine and runs with no API key or
+external dependencies. Modules 1 and 3 add AI-assisted intake and refinement,
+and both offer a no-API path. Human review gates sit between parsing and
+validation, and the Step 6 governance check is a hard gate inside the engine.
+
+```
+Module 1 — kpi_parser.py  (intake: Claude API or Level 2A no-API)
+    parse_kpi() → detect_mode() → build_full_prompt()
+    display_parsed_fields()
+        │
+        ▼
+   [ Human review — confirm parsed fields before validation ]
+        │
+        ▼
+    parsed_kpi.json
+        │
+        ▼
+Module 2 — kpi_readiness_10step.py  (pure Python, no API, no dependencies)
+    KPIInput (dataclass) → run_kpi_readiness()
+    step_1_register … step_10_assess_best_practices()
+        step_6_check_governance()  [ hard gate ]
+        step_7_assess_readiness()  [ publish decision ]
+    export_report_json() · export_report_csv() · plot_time_series()
+        │
+        ├──►  _report.json · _summary.csv
+        └──►  _chart.png
+        │
+        ▼
+Module 3 — kpi_improver.py  (optional)
+    find_report_json() → load_report()
+    get_suggestions_from_claude()
+    analyze_survey_comments_with_llm()
+    generate_html_dashboard()  →  _dashboard.html
+    save_suggestions()         →  _suggestions.txt
+```
+
+### Modules
+
+| Module | File | Role | Requires |
+|--------|------|------|----------|
+| 1 | `kpi_parser.py` | Plain-language intake, structured-field extraction, human review | Python only (Level 2A) or API key (Level 2) |
+| 2 | `kpi_readiness_10step.py` | 10-step validation engine, report and chart output | Python 3.8+ only |
+| 3 | `kpi_improver.py` | AI-suggested refinements, board-ready HTML dashboard, survey NLP | Python only (no-API) or API key |
+
+### Key functions
+
+`kpi_parser.py`
+- `parse_kpi()` — unified entry point; routes to API mode or Level 2A no-API mode
+- `detect_mode()` — selects the path based on whether an API key is present
+- `build_full_prompt()` — assembles the self-contained prompt for no-API mode
+- `display_parsed_fields()` — presents parsed fields for human confirmation
+
+`kpi_readiness_10step.py`
+- `KPIInput` — dataclass holding the KPI definition, sources, historical series, and governance fields
+- `run_kpi_readiness()` — runs all ten steps and assembles the report
+- `step_1_register` … `step_10_assess_best_practices()` — the ten validation steps
+- `step_6_check_governance()` — hard gate; incomplete governance blocks readiness
+- `step_7_assess_readiness()` — publish decision (Ready / Not Ready)
+- `export_report_json()`, `export_report_csv()`, `plot_time_series()` — output writers
+- `run_batch_readiness()` — validates multiple KPIs in one pass
+
+`kpi_improver.py`
+- `find_report_json()`, `load_report()` — locate and read the engine's report
+- `get_suggestions_from_claude()` — AI-drafted refinement candidates
+- `analyze_survey_comments_with_llm()` — optional NLP on survey comments
+- `generate_html_dashboard()` — board-ready dashboard output
+- `save_suggestions()` — writes the refinement file
+
+### Data files
+
+| File | Written by | Read by | Contents |
+|------|-----------|---------|----------|
+| `parsed_kpi.json` | Module 1 | Module 2 | Structured KPI fields after human review |
+| `_report.json` | Module 2 | Module 3 | Full 10-step audit trail |
+| `_summary.csv` | Module 2 | — | Executive one-page summary |
+| `_chart.png` | Module 2 | — | Time-series chart with anomalies marked |
+| `_dashboard.html` | Module 3 | — | Board-ready dashboard |
+| `_suggestions.txt` | Module 3 | — | AI-drafted refinements for human review |
+| `parser_prompt.txt` | Module 1 (Level 2A) | — | Exported prompt for pasting into any LLM |
+
+### Governance gates
+
+Human oversight is enforced at two points that AI cannot bypass: the review
+of all parsed fields in Module 1 before validation runs, and the Step 6
+governance check inside the engine, which blocks a Ready decision if data
+owner, steward, limitations, equity risks, or human sign-off are missing.
+
+---
+
 ## Installation
 
 ### Level 1 — Core Validation Only
